@@ -5,16 +5,17 @@ package tail
 import (
 	"bufio"
 	"fmt"
-	"github.com/ActiveState/tail/ratelimiter"
-	"github.com/ActiveState/tail/util"
-	"github.com/ActiveState/tail/watch"
-	"gopkg.in/tomb.v1"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/ActiveState/tail/ratelimiter"
+	"github.com/ActiveState/tail/util"
+	"github.com/ActiveState/tail/watch"
+	"gopkg.in/tomb.v1"
 )
 
 var (
@@ -22,14 +23,15 @@ var (
 )
 
 type Line struct {
-	Text string
-	Time time.Time
-	Err  error // Error from tail
+	Text   string
+	Time   time.Time
+	Offset int64
+	Err    error // Error from tail
 }
 
 // NewLine returns a Line with present time.
 func NewLine(text string) *Line {
-	return &Line{text, time.Now(), nil}
+	return &Line{text, time.Now(), 0, nil}
 }
 
 // SeekInfo represents arguments to `os.Seek`
@@ -65,6 +67,8 @@ type Tail struct {
 	reader  *bufio.Reader
 	watcher watch.FileWatcher
 	changes *watch.FileChanges
+
+	closeOffset int64
 
 	tomb.Tomb // provides: Done, Kill, Dying
 }
@@ -121,8 +125,9 @@ func TailFile(filename string, config Config) (*Tail, error) {
 // so it may lost one line.
 func (tail *Tail) Tell() (offset int64, err error) {
 	if tail.file == nil {
-		return
+		return tail.closeOffset, nil
 	}
+
 	offset, err = tail.file.Seek(0, os.SEEK_CUR)
 	if err == nil {
 		offset -= int64(tail.reader.Buffered())
@@ -137,9 +142,16 @@ func (tail *Tail) Stop() error {
 }
 
 func (tail *Tail) close() {
+	pos, err := tail.Tell()
+
+	if err == nil {
+		tail.closeOffset = pos
+	}
+
 	close(tail.Lines)
 	if tail.file != nil {
 		tail.file.Close()
+		tail.file = nil
 	}
 }
 
@@ -168,18 +180,20 @@ func (tail *Tail) reopen() error {
 	return nil
 }
 
-func (tail *Tail) readLine() (string, error) {
+func (tail *Tail) readLine() (string, int64, error) {
 	line, err := tail.reader.ReadString('\n')
+	sz := int64(len(line))
+
 	if err != nil {
 		// Note ReadString "returns the data read before the error" in
 		// case of an error, including EOF, so we return it as is. The
 		// caller is expected to process it if err is EOF.
-		return line, err
+		return line, sz, err
 	}
 
 	line = strings.TrimRight(line, "\n")
 
-	return line, err
+	return line, sz, err
 }
 
 func (tail *Tail) tailFileSync() {
@@ -209,20 +223,26 @@ func (tail *Tail) tailFileSync() {
 
 	tail.openReader()
 
+	offset, err := tail.file.Seek(0, os.SEEK_CUR)
+	if err != nil {
+		tail.Kill(err)
+		return
+	}
+
 	// Read line by line.
 	for {
-		line, err := tail.readLine()
+		line, sz, err := tail.readLine()
 
 		// Process `line` even if err is EOF.
 		if err == nil || (err == io.EOF && line != "") {
-			cooloff := !tail.sendLine(line)
+			cooloff := !tail.sendLine(line, offset)
 			if cooloff {
 				// Wait a second before seeking till the end of
 				// file when rate limit is reached.
 				msg := fmt.Sprintf(
 					"Too much log activity; waiting a second " +
 						"before resuming tailing")
-				tail.Lines <- &Line{msg, time.Now(), fmt.Errorf(msg)}
+				tail.Lines <- &Line{msg, time.Now(), 0, fmt.Errorf(msg)}
 				select {
 				case <-time.After(time.Second):
 				case <-tail.Dying():
@@ -259,6 +279,8 @@ func (tail *Tail) tailFileSync() {
 			return
 		default:
 		}
+
+		offset += sz
 	}
 }
 
@@ -328,21 +350,29 @@ func (tail *Tail) seekEnd() error {
 
 // sendLine sends the line(s) to Lines channel, splitting longer lines
 // if necessary. Return false if rate limit is reached.
-func (tail *Tail) sendLine(line string) bool {
+func (tail *Tail) sendLine(line string, sz int64) bool {
 	now := time.Now()
-	lines := []string{line}
+
+	total := 1
 
 	// Split longer lines
 	if tail.MaxLineSize > 0 && len(line) > tail.MaxLineSize {
-		lines = util.PartitionString(line, tail.MaxLineSize)
-	}
+		lines := util.PartitionString(line, tail.MaxLineSize)
 
-	for _, line := range lines {
-		tail.Lines <- &Line{line, now, nil}
+		total = len(lines)
+
+		offset := sz
+
+		for _, line := range lines {
+			tail.Lines <- &Line{line, now, offset, nil}
+			offset += int64(len(line))
+		}
+	} else {
+		tail.Lines <- &Line{line, now, sz, nil}
 	}
 
 	if tail.Config.RateLimiter != nil {
-		ok := tail.Config.RateLimiter.Pour(uint16(len(lines)))
+		ok := tail.Config.RateLimiter.Pour(uint16(total))
 		if !ok {
 			tail.Logger.Printf("Leaky bucket full (%v); entering 1s cooloff period.\n",
 				tail.Filename)

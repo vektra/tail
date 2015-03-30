@@ -6,14 +6,14 @@
 package tail
 
 import (
-	"./watch"
-	_ "fmt"
-	"github.com/ActiveState/tail/ratelimiter"
 	"io/ioutil"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"./watch"
+	"github.com/ActiveState/tail/ratelimiter"
 )
 
 func init() {
@@ -58,7 +58,9 @@ func TestMaxLineSize(_t *testing.T) {
 	t := NewTailTest("maxlinesize", _t)
 	t.CreateFile("test.txt", "hello\nworld\nfin\nhe")
 	tail := t.StartTail("test.txt", Config{Follow: true, Location: nil, MaxLineSize: 3})
-	go t.VerifyTailOutput(tail, []string{"hel", "lo", "wor", "ld", "fin", "he"})
+	go t.VerifyTailOutputOffsets(tail,
+		[]string{"hel", "lo", "wor", "ld", "fin", "he"},
+		[]int64{0, 3, 6, 9, 12, 16})
 
 	// Delete after a reasonable delay, to give tail sufficient time
 	// to read all lines.
@@ -73,7 +75,7 @@ func TestOver4096ByteLine(_t *testing.T) {
 	testString := strings.Repeat("a", 4097)
 	t.CreateFile("test.txt", "test\n"+testString+"\nhello\nworld\n")
 	tail := t.StartTail("test.txt", Config{Follow: true, Location: nil})
-	go t.VerifyTailOutput(tail, []string{"test", testString, "hello", "world"})
+	go t.VerifyTailOutput(tail, []string{"test", testString, "hello", "world"}, 0)
 
 	// Delete after a reasonable delay, to give tail sufficient time
 	// to read all lines.
@@ -87,7 +89,7 @@ func TestOver4096ByteLineWithSetMaxLineSize(_t *testing.T) {
 	testString := strings.Repeat("a", 4097)
 	t.CreateFile("test.txt", "test\n"+testString+"\nhello\nworld\n")
 	tail := t.StartTail("test.txt", Config{Follow: true, Location: nil, MaxLineSize: 4097})
-	go t.VerifyTailOutput(tail, []string{"test", testString, "hello", "world"})
+	go t.VerifyTailOutput(tail, []string{"test", testString, "hello", "world"}, 0)
 
 	// Delete after a reasonable delay, to give tail sufficient time
 	// to read all lines.
@@ -101,7 +103,7 @@ func TestLocationFull(_t *testing.T) {
 	t := NewTailTest("location-full", _t)
 	t.CreateFile("test.txt", "hello\nworld\n")
 	tail := t.StartTail("test.txt", Config{Follow: true, Location: nil})
-	go t.VerifyTailOutput(tail, []string{"hello", "world"})
+	go t.VerifyTailOutput(tail, []string{"hello", "world"}, 0)
 
 	// Delete after a reasonable delay, to give tail sufficient time
 	// to read all lines.
@@ -115,7 +117,7 @@ func TestLocationFullDontFollow(_t *testing.T) {
 	t := NewTailTest("location-full-dontfollow", _t)
 	t.CreateFile("test.txt", "hello\nworld\n")
 	tail := t.StartTail("test.txt", Config{Follow: false, Location: nil})
-	go t.VerifyTailOutput(tail, []string{"hello", "world"})
+	go t.VerifyTailOutput(tail, []string{"hello", "world"}, 0)
 
 	// Add more data only after reasonable delay.
 	<-time.After(100 * time.Millisecond)
@@ -130,7 +132,7 @@ func TestLocationEnd(_t *testing.T) {
 	t := NewTailTest("location-end", _t)
 	t.CreateFile("test.txt", "hello\nworld\n")
 	tail := t.StartTail("test.txt", Config{Follow: true, Location: &SeekInfo{0, os.SEEK_END}})
-	go t.VerifyTailOutput(tail, []string{"more", "data"})
+	go t.VerifyTailOutput(tail, []string{"more", "data"}, 12)
 
 	<-time.After(100 * time.Millisecond)
 	t.AppendFile("test.txt", "more\ndata\n")
@@ -148,7 +150,7 @@ func TestLocationMiddle(_t *testing.T) {
 	t := NewTailTest("location-end", _t)
 	t.CreateFile("test.txt", "hello\nworld\n")
 	tail := t.StartTail("test.txt", Config{Follow: true, Location: &SeekInfo{-6, os.SEEK_END}})
-	go t.VerifyTailOutput(tail, []string{"world", "more", "data"})
+	go t.VerifyTailOutput(tail, []string{"world", "more", "data"}, 6)
 
 	<-time.After(100 * time.Millisecond)
 	t.AppendFile("test.txt", "more\ndata\n")
@@ -177,7 +179,7 @@ func _TestReOpen(_t *testing.T, poll bool) {
 		"test.txt",
 		Config{Follow: true, ReOpen: true, Poll: poll})
 
-	go t.VerifyTailOutput(tail, []string{"hello", "world", "more", "data", "endofworld"})
+	go t.VerifyTailOutput(tail, []string{"hello", "world", "more", "data", "endofworld"}, 0)
 
 	// deletion must trigger reopen
 	<-time.After(delay)
@@ -229,7 +231,9 @@ func _TestReSeek(_t *testing.T, poll bool) {
 		Config{Follow: true, ReOpen: false, Poll: poll})
 
 	go t.VerifyTailOutput(tail, []string{
-		"a really long string goes here", "hello", "world", "h311o", "w0r1d", "endofworld"})
+		"a really long string goes here", "hello", "world",
+		"h311o", "w0r1d", "endofworld"},
+		0)
 
 	// truncate now
 	<-time.After(100 * time.Millisecond)
@@ -268,11 +272,12 @@ func TestRateLimiting(_t *testing.T) {
 	tail := t.StartTail("test.txt", config)
 
 	// TODO: also verify that tail resumes after the cooloff period.
-	go t.VerifyTailOutput(tail, []string{
+	go t.VerifyTailOutputOffsets(tail, []string{
 		"hello", "world", "again",
 		leakybucketFull,
 		"more", "data",
-		leakybucketFull})
+		leakybucketFull},
+		[]int64{0, 6, 12, 0, 18, 23, 0})
 
 	// Add more data only after reasonable delay.
 	<-time.After(1200 * time.Millisecond)
@@ -398,7 +403,7 @@ func (t TailTest) StartTail(name string, config Config) *Tail {
 	return tail
 }
 
-func (t TailTest) VerifyTailOutput(tail *Tail, lines []string) {
+func (t TailTest) VerifyTailOutput(tail *Tail, lines []string, offset int64) {
 	for idx, line := range lines {
 		tailedLine, ok := <-tail.Lines
 		if !ok {
@@ -419,6 +424,45 @@ func (t TailTest) VerifyTailOutput(tail *Tail, lines []string) {
 				"unexpected line/err from tail: "+
 					"expecting <<%s>>>, but got <<<%s>>>",
 				line, tailedLine.Text)
+		}
+
+		// fmt.Fprintf(os.Stderr, "offset, %d <> %d\n", tailedLine.Offset, offset)
+		if tailedLine.Offset != offset {
+			t.Fatal("offset of line was '%d', not '%d'", tailedLine.Offset, offset)
+		}
+
+		offset += int64(len(line) + 1)
+	}
+	line, ok := <-tail.Lines
+	if ok {
+		t.Fatalf("more content from tail: %+v", line)
+	}
+}
+func (t TailTest) VerifyTailOutputOffsets(tail *Tail, lines []string, offsets []int64) {
+	for idx, line := range lines {
+		tailedLine, ok := <-tail.Lines
+		if !ok {
+			// tail.Lines is closed and empty.
+			err := tail.Err()
+			if err != nil {
+				t.Fatalf("tail ended with error: %v", err)
+			}
+			t.Fatalf("tail ended early; expecting more: %v", lines[idx:])
+		}
+		if tailedLine == nil {
+			t.Fatalf("tail.Lines returned nil; not possible")
+		}
+		// Note: not checking .Err as the `lines` argument is designed
+		// to match error strings as well.
+		if tailedLine.Text != line {
+			t.Fatalf(
+				"unexpected line/err from tail: "+
+					"expecting <<%s>>>, but got <<<%s>>>",
+				line, tailedLine.Text)
+		}
+
+		if tailedLine.Offset != offsets[idx] {
+			t.Fatal("offset of line was '%d', not '%d'", tailedLine.Offset, offsets[idx])
 		}
 	}
 	line, ok := <-tail.Lines
