@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"./watch"
-	"github.com/ActiveState/tail/ratelimiter"
+	"github.com/vektra/tail/ratelimiter"
 )
 
 func init() {

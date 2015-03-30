@@ -4,11 +4,12 @@ package watch
 
 import (
 	"fmt"
-	"github.com/ActiveState/tail/util"
-	"github.com/howeyc/fsnotify"
-	"gopkg.in/tomb.v1"
 	"os"
 	"path/filepath"
+
+	"github.com/howeyc/fsnotify"
+	"github.com/vektra/tail/util"
+	"gopkg.in/tomb.v1"
 )
 
 var inotifyTracker *InotifyTracker

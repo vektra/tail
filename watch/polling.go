@@ -3,10 +3,11 @@
 package watch
 
 import (
-	"github.com/ActiveState/tail/util"
-	"gopkg.in/tomb.v1"
 	"os"
 	"time"
+
+	"github.com/vektra/tail/util"
+	"gopkg.in/tomb.v1"
 )
 
 // PollingFileWatcher polls the file for changes.

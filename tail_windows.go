@@ -3,8 +3,9 @@
 package tail
 
 import (
-	"github.com/ActiveState/tail/winfile"
 	"os"
+
+	"github.com/vektra/tail/winfile"
 )
 
 func OpenFile(name string) (file *os.File, err error) {
