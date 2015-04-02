@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/howeyc/fsnotify"
 	"github.com/vektra/tail/util"
+	"gopkg.in/fsnotify.v1"
 	"gopkg.in/tomb.v1"
 )
 
@@ -35,7 +35,7 @@ func (fw *InotifyFileWatcher) BlockUntilExists(t *tomb.Tomb) error {
 	dirname := filepath.Dir(fw.Filename)
 
 	// Watch for new files to be created in the parent directory.
-	err = w.WatchFlags(dirname, fsnotify.FSN_CREATE)
+	err = w.Add(dirname)
 	if err != nil {
 		return err
 	}
@@ -49,7 +49,7 @@ func (fw *InotifyFileWatcher) BlockUntilExists(t *tomb.Tomb) error {
 
 	for {
 		select {
-		case evt, ok := <-w.Event:
+		case evt, ok := <-w.Events:
 			if !ok {
 				return fmt.Errorf("inotify watcher has been closed")
 			} else if evt.Name == fw.Filename {
@@ -59,6 +59,7 @@ func (fw *InotifyFileWatcher) BlockUntilExists(t *tomb.Tomb) error {
 			return tomb.ErrDying
 		}
 	}
+
 	panic("unreachable")
 }
 
@@ -69,12 +70,21 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, fi os.FileInfo) *FileCh
 	if err != nil {
 		util.Fatal("Error creating fsnotify watcher: %v", err)
 	}
-	err = w.Watch(fw.Filename)
+
+	err = w.Add(fw.Filename)
 	if err != nil {
-		util.Fatal("Error watching %v: %v", fw.Filename, err)
+		if !os.IsNotExist(err) {
+			util.Fatal("Error watching %v: %v", fw.Filename, err)
+		}
 	}
 
-	fw.Size = fi.Size()
+	dirname := filepath.Dir(fw.Filename)
+
+	w.Add(dirname)
+
+	if fi != nil {
+		fw.Size = fi.Size()
+	}
 
 	go func() {
 		defer inotifyTracker.CloseWatcher(w)
@@ -83,11 +93,13 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, fi os.FileInfo) *FileCh
 		for {
 			prevSize := fw.Size
 
-			var evt *fsnotify.FileEvent
-			var ok bool
+			var (
+				evt fsnotify.Event
+				ok  bool
+			)
 
 			select {
-			case evt, ok = <-w.Event:
+			case evt, ok = <-w.Events:
 				if !ok {
 					return
 				}
@@ -96,14 +108,24 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, fi os.FileInfo) *FileCh
 			}
 
 			switch {
-			case evt.IsDelete():
+			case evt.Op&fsnotify.Remove == fsnotify.Remove:
+				if evt.Name != fw.Filename {
+					continue
+				}
+
 				fallthrough
 
-			case evt.IsRename():
+			case evt.Op&fsnotify.Rename == fsnotify.Rename:
 				changes.NotifyDeleted()
 				return
 
-			case evt.IsModify():
+			case evt.Op&fsnotify.Create == fsnotify.Create:
+				if evt.Name == fw.Filename {
+					w.Add(fw.Filename)
+				}
+
+				fallthrough
+			case evt.Op&fsnotify.Write == fsnotify.Write:
 				fi, err := os.Stat(fw.Filename)
 				if err != nil {
 					if os.IsNotExist(err) {
@@ -113,6 +135,7 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, fi os.FileInfo) *FileCh
 					// XXX: report this error back to the user
 					util.Fatal("Failed to stat file %v: %v", fw.Filename, err)
 				}
+
 				fw.Size = fi.Size()
 
 				if prevSize > 0 && prevSize > fw.Size {
@@ -120,6 +143,7 @@ func (fw *InotifyFileWatcher) ChangeEvents(t *tomb.Tomb, fi os.FileInfo) *FileCh
 				} else {
 					changes.NotifyModified()
 				}
+
 				prevSize = fw.Size
 			}
 		}

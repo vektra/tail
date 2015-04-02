@@ -205,6 +205,9 @@ func (tail *Tail) tailFileSync() {
 	defer tail.Done()
 	defer tail.close()
 
+	st, _ := os.Stat(tail.Filename)
+	tail.changes = tail.watcher.ChangeEvents(&tail.Tomb, st)
+
 	if !tail.MustExist {
 		// deferred first open.
 		err := tail.reopen()
@@ -263,6 +266,7 @@ func (tail *Tail) tailFileSync() {
 			if !tail.Follow {
 				return
 			}
+
 			// When EOF is reached, wait for more data to become
 			// available. Wait strategy is based on the `tail.watcher`
 			// implementation (inotify or polling).
@@ -293,44 +297,38 @@ func (tail *Tail) tailFileSync() {
 // moved or truncated. When moved or deleted - the file will be
 // reopened if ReOpen is true. Truncated files are always reopened.
 func (tail *Tail) waitForChanges() error {
-	if tail.changes == nil {
-		st, err := tail.file.Stat()
-		if err != nil {
-			return err
-		}
-		tail.changes = tail.watcher.ChangeEvents(&tail.Tomb, st)
-	}
-
-	select {
-	case <-tail.changes.Modified:
-		return nil
-	case <-tail.changes.Deleted:
-		tail.changes = nil
-		if tail.ReOpen {
-			// XXX: we must not log from a library.
-			tail.Logger.Printf("Re-opening moved/deleted file %s ...", tail.Filename)
+	for {
+		select {
+		case <-tail.changes.Modified:
+			return nil
+		case <-tail.changes.Deleted:
+			if tail.ReOpen {
+				// XXX: we must not log from a library.
+				tail.Logger.Printf("Re-opening moved/deleted file %s ...", tail.Filename)
+				if err := tail.reopen(); err != nil {
+					return err
+				}
+				tail.Logger.Printf("Successfully reopened %s", tail.Filename)
+				tail.openReader()
+				return nil
+			} else {
+				tail.Logger.Printf("Stopping tail as file no longer exists: %s", tail.Filename)
+				return ErrStop
+			}
+		case <-tail.changes.Truncated:
+			// Always reopen truncated files (Follow is true)
+			tail.Logger.Printf("Re-opening truncated file %s ...", tail.Filename)
 			if err := tail.reopen(); err != nil {
 				return err
 			}
-			tail.Logger.Printf("Successfully reopened %s", tail.Filename)
+			tail.Logger.Printf("Successfully reopened truncated %s", tail.Filename)
 			tail.openReader()
 			return nil
-		} else {
-			tail.Logger.Printf("Stopping tail as file no longer exists: %s", tail.Filename)
+		case <-tail.Dying():
 			return ErrStop
 		}
-	case <-tail.changes.Truncated:
-		// Always reopen truncated files (Follow is true)
-		tail.Logger.Printf("Re-opening truncated file %s ...", tail.Filename)
-		if err := tail.reopen(); err != nil {
-			return err
-		}
-		tail.Logger.Printf("Successfully reopened truncated %s", tail.Filename)
-		tail.openReader()
-		return nil
-	case <-tail.Dying():
-		return ErrStop
 	}
+
 	panic("unreachable")
 }
 

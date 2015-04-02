@@ -3,9 +3,10 @@
 package watch
 
 import (
-	"github.com/howeyc/fsnotify"
 	"log"
 	"sync"
+
+	"gopkg.in/fsnotify.v1"
 )
 
 type InotifyTracker struct {
@@ -20,20 +21,21 @@ func NewInotifyTracker() *InotifyTracker {
 }
 
 func (t *InotifyTracker) NewWatcher() (*fsnotify.Watcher, error) {
-	t.mux.Lock()
-	defer t.mux.Unlock()
 	w, err := fsnotify.NewWatcher()
 	if err == nil {
+		t.mux.Lock()
+		defer t.mux.Unlock()
 		t.watchers[w] = true
 	}
 	return w, err
 }
 
 func (t *InotifyTracker) CloseWatcher(w *fsnotify.Watcher) (err error) {
+	err = w.Close()
+
 	t.mux.Lock()
 	defer t.mux.Unlock()
 	if _, ok := t.watchers[w]; ok {
-		err = w.Close()
 		delete(t.watchers, w)
 	}
 	return
@@ -42,6 +44,7 @@ func (t *InotifyTracker) CloseWatcher(w *fsnotify.Watcher) (err error) {
 func (t *InotifyTracker) CloseAll() {
 	t.mux.Lock()
 	defer t.mux.Unlock()
+
 	for w, _ := range t.watchers {
 		if err := w.Close(); err != nil {
 			log.Printf("Error closing watcher: %v", err)
